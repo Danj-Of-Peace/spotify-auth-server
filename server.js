@@ -1,55 +1,97 @@
 import express from 'express';
 import fetch from 'node-fetch';
+import dotenv from 'dotenv';
 import cors from 'cors';
+import querystring from 'querystring';
+
+dotenv.config();
 
 const app = express();
+const port = process.env.PORT || 3000;
+
 app.use(cors());
 
-const client_id = '4595aa31219c4fbabf83fe388bf55682'; // Replace if needed
-const client_secret = '69c9de26bf1c48899e5e933f53dd5b90'; // Replace this with your actual Spotify secret
-const redirect_uri = 'https://spotify-auth-server-dxij.onrender.com/callback';
+const client_id = process.env.SPOTIFY_CLIENT_ID;
+const client_secret = process.env.SPOTIFY_CLIENT_SECRET;
+const redirect_uri = process.env.REDIRECT_URI;  // e.g. https://spotify-auth-server-dxij.onrender.com/callback
+
+// Helper to encode basic auth for Spotify
+const basicAuth = Buffer.from(`${client_id}:${client_secret}`).toString('base64');
 
 app.get('/login', (req, res) => {
   const scope = 'user-read-private user-read-email';
-  const authUrl = 'https://accounts.spotify.com/authorize?' +
-    new URLSearchParams({
+  const authUrl =
+    'https://accounts.spotify.com/authorize?' +
+    querystring.stringify({
       response_type: 'code',
-      client_id,
-      scope,
-      redirect_uri
+      client_id: client_id,
+      scope: scope,
+      redirect_uri: redirect_uri,
+      show_dialog: true,
     });
-
   res.redirect(authUrl);
 });
 
 app.get('/callback', async (req, res) => {
   const code = req.query.code || null;
 
-  const body = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    redirect_uri,
-    client_id,
-    client_secret
-  });
+  if (!code) {
+    return res.status(400).send('No code provided');
+  }
 
-  const response = await fetch('https://accounts.spotify.com/api/token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded'
-    },
-    body
-  });
+  try {
+    // Exchange code for tokens
+    const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${basicAuth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: querystring.stringify({
+        grant_type: 'authorization_code',
+        code: code,
+        redirect_uri: redirect_uri,
+      }),
+    });
 
-  const data = await response.json();
+    const tokenData = await tokenResponse.json();
 
-  if (data.access_token) {
-    res.send(`<h1>Login successful</h1><p>Access token: ${data.access_token}</p>`);
-  } else {
-    res.status(400).json(data);
+    if (tokenData.error) {
+      return res.status(400).send('Error retrieving access token');
+    }
+
+    const access_token = tokenData.access_token;
+    const refresh_token = tokenData.refresh_token;
+
+    // Serve HTML that posts the access token back to your frontend
+    res.send(`
+      <!DOCTYPE html>
+      <html lang="en">
+      <head><title>Spotify Auth Callback</title></head>
+      <body>
+        <h2>Login successful</h2>
+        <p>You can close this window now.</p>
+        <script>
+          // Send token to opener window only if it exists
+          if (window.opener) {
+            window.opener.postMessage(
+              { access_token: '${access_token}', refresh_token: '${refresh_token}' },
+              'https://throbbers-2025.web.app'
+            );
+            window.close();
+          } else {
+            document.body.innerText = 'No window opener found.';
+          }
+        </script>
+      </body>
+      </html>
+    `);
+  } catch (error) {
+    console.error('Error during token exchange:', error);
+    res.status(500).send('Internal Server Error');
   }
 });
 
-app.listen(3000, () => {
-  console.log('✅ Server listening at http://127.0.0.1:3000');
+app.listen(port, () => {
+  console.log(`Server listening on port ${port}`);
 });
